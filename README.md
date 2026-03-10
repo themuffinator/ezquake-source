@@ -70,6 +70,8 @@ For a more in-depth description of how to build on all platforms, have a look at
 ## Nightly builds
 
 Nightly builds can be found [here][nightly]
+Nightly build-kit scripts and layout are documented in
+[docs/nightly-testing-kit.md](docs/nightly-testing-kit.md).
 
  [nQuake]: http://nquake.com/
  [webchat]: http://webchat.quakenet.org/?channels=#ezquake

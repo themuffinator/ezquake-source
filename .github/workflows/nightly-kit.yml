@@ -1,0 +1,89 @@
+name: nightly-kit
+
+on:
+  schedule:
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-kit:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            outputDir: artifacts/nightly
+          - os: ubuntu-latest
+            platform: linux
+            outputDir: artifacts/nightly
+            packages: "build-essential ca-certificates cmake curl file git libcurl4-openssl-dev libexpat1-dev libfreetype-dev libfuse3-dev libjansson-dev libjpeg-dev libminizip-dev libpcre2-dev libpng-dev libsdl2-2.0-0 libsdl2-dev libsndfile1-dev libspeex-dev libspeexdsp-dev ninja-build unzip"
+          - os: macos-latest
+            platform: macos
+            outputDir: artifacts/nightly
+            packages: "autoconf automake libtool"
+
+    name: nightly-${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Prepare Linux environment
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install --no-install-recommends ${{ matrix.packages }}
+
+      - name: Prepare macOS environment
+        if: matrix.platform == 'macos'
+        run: brew install -q ${{ matrix.packages }}
+
+      - name: Set library build type to release
+        if: matrix.platform != 'linux'
+        shell: bash
+        run: |
+          for x in {cmake/triplets/*,vcpkg/triplets/{*,community/*}}; do
+            if [[ -f $x ]]; then
+              echo >> "$x"
+              echo 'set(VCPKG_BUILD_TYPE release)' >> "$x"
+            fi
+          done
+
+      - name: Setup CMake
+        if: matrix.platform != 'linux'
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Setup vcpkg
+        if: matrix.platform != 'linux'
+        uses: lukka/run-vcpkg@v11
+
+      - name: Build nightly kit (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/nightly/build_nightly_windows.ps1 -OutputRoot "${{ github.workspace }}/${{ matrix.outputDir }}"
+
+      - name: Build nightly kit (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          bash tools/nightly/build_nightly_linux.sh --output-root "${{ github.workspace }}/${{ matrix.outputDir }}"
+
+      - name: Build nightly kit (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          bash tools/nightly/build_nightly_macos.sh --skip-bootstrap --output-root "${{ github.workspace }}/${{ matrix.outputDir }}"
+
+      - name: Upload nightly kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-kit-${{ matrix.platform }}
+          path: ${{ matrix.outputDir }}/*.zip
+          compression-level: 0
