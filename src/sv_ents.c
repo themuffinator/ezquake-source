@@ -109,6 +109,475 @@ static void SV_EmitNailUpdate (sizebuf_t *msg, qbool recorder)
 
 //=============================================================================
 
+#define CSQC_SEND_FULLFLAGS	0x00FFFFFFu
+#define CSQC_RESEND_FRAMES	3
+#define CSQC_TYPE_WEAPONINFO	1
+#define CSQC_TYPE_PROJECTILE	2
+#define CSQC_TYPE_WEAPONDEF	4
+
+qbool SV_EntityVisibleToClient(client_t* client, int e, byte* pvs);
+
+static void SV_CSQC_ResetClientStats(client_t* client)
+{
+	if (!client)
+	{
+		return;
+	}
+
+	client->csqc_stats_setsendneeded = 0;
+	client->csqc_stats_packets = 0;
+	client->csqc_stats_updates = 0;
+	client->csqc_stats_removes = 0;
+	client->csqc_stats_payload_bytes = 0;
+	client->csqc_stats_type_weaponinfo = 0;
+	client->csqc_stats_type_projectile = 0;
+	client->csqc_stats_type_weapondef = 0;
+	client->csqc_stats_type_other = 0;
+	client->csqc_stats_reported = false;
+	client->csqc_stats_projectile_reported = false;
+}
+
+void SV_CSQC_LogClientSummary(client_t* client, const char* reason)
+{
+	if (!client)
+	{
+		return;
+	}
+
+	if (!client->csqc_stats_setsendneeded &&
+		!client->csqc_stats_packets &&
+		!client->csqc_stats_updates &&
+		!client->csqc_stats_removes &&
+		!client->csqc_stats_payload_bytes &&
+		!client->csqc_stats_type_weaponinfo &&
+		!client->csqc_stats_type_projectile &&
+		!client->csqc_stats_type_weapondef &&
+		!client->csqc_stats_type_other)
+	{
+		return;
+	}
+
+	Con_Printf(
+		"CSQC-SUMMARY: reason=%s name=%s userid=%d active=%d setsendneeded=%u packets=%u updates=%u removes=%u payload_bytes=%u type_weaponinfo=%u type_projectile=%u type_weapondef=%u type_other=%u\n",
+		(reason && reason[0]) ? reason : "unknown",
+		client->name[0] ? client->name : "<unnamed>",
+		client->userid,
+		client->csqcactive ? 1 : 0,
+		client->csqc_stats_setsendneeded,
+		client->csqc_stats_packets,
+		client->csqc_stats_updates,
+		client->csqc_stats_removes,
+		client->csqc_stats_payload_bytes,
+		client->csqc_stats_type_weaponinfo,
+		client->csqc_stats_type_projectile,
+		client->csqc_stats_type_weapondef,
+		client->csqc_stats_type_other
+	);
+}
+
+static qbool SV_CSQC_ServerHasProgs(void)
+{
+	return *Info_ValueForKey(svs.info, "*csprogs") != 0;
+}
+
+static qbool SV_CSQC_ClientReady(client_t* client)
+{
+	return client && client->state == cs_spawned && client->csqcactive && SV_CSQC_ServerHasProgs();
+}
+
+static qbool SV_CSQC_IsVisibleToClient(client_t* client, int entnum, byte* pvs, byte* phs)
+{
+	edict_t* ent = EDICT_NUM(entnum);
+	int pvsflags = (int)ent->xv.pvsflags;
+	int visibility_mode = pvsflags & PVSF_MODE_MASK;
+
+	if (visibility_mode == PVSF_IGNOREPVS)
+	{
+		return true;
+	}
+
+	if (visibility_mode == PVSF_USEPHS)
+	{
+		return SV_EntityVisibleToClient(client, entnum, phs ? phs : pvs);
+	}
+
+	return SV_EntityVisibleToClient(client, entnum, pvs);
+}
+
+static qbool SV_CSQC_WriteHeaderAndDelta(sizebuf_t* msg, int entnum, qbool remove, qbool* wrote_header, qbool sized, int payload_size)
+{
+	int needed = (int)sizeof(short);
+
+	if (!remove && sized)
+	{
+		needed += (int)sizeof(short);
+	}
+	if (!*wrote_header)
+	{
+		needed += (int)sizeof(byte);
+	}
+	if (msg->cursize + needed > msg->maxsize)
+	{
+		return false;
+	}
+
+	if (!*wrote_header)
+	{
+		MSG_WriteByte(msg, sized ? svc_fte_csqcentities_sized : svc_fte_csqcentities);
+		*wrote_header = true;
+	}
+
+	MSG_WriteShort(msg, entnum | (remove ? 0x8000 : 0));
+	if (!remove && sized)
+	{
+		MSG_WriteShort(msg, payload_size);
+	}
+	return true;
+}
+
+static void SV_CSQC_LogPacketHex(client_t* client, sizebuf_t* msg, int start)
+{
+	char line[4096];
+	int end = msg ? msg->cursize : 0;
+	int total = end - start;
+	int max_dump;
+	int i;
+	int offset = 0;
+
+	if (!msg || start < 0 || start >= end)
+	{
+		return;
+	}
+
+	max_dump = (int)sv_csqc_debug_dump.value;
+	if (max_dump <= 0)
+	{
+		max_dump = 128;
+	}
+	if (max_dump > total)
+	{
+		max_dump = total;
+	}
+
+	offset += snprintf(
+		line + offset,
+		sizeof(line) - offset,
+		"CSQC-DUMP: name=%s userid=%d total_bytes=%d dump_bytes=%d data=",
+		client && client->name[0] ? client->name : "<unnamed>",
+		client ? client->userid : 0,
+		total,
+		max_dump
+	);
+
+	for (i = 0; i < max_dump && offset < (int)sizeof(line) - 4; i++)
+	{
+		offset += snprintf(line + offset, sizeof(line) - offset, "%02x", (unsigned int)msg->data[start + i]);
+		if (i + 1 < max_dump && offset < (int)sizeof(line) - 2)
+		{
+			line[offset++] = ' ';
+			line[offset] = '\0';
+		}
+	}
+
+	Con_Printf("%s\n", line);
+}
+
+#ifdef USE_PR2
+static qbool SV_CSQC_CallSendEntity(client_t* client, edict_t* ent, unsigned int sendflags, sizebuf_t* payload)
+{
+	int old_self;
+	int old_other;
+	int result;
+
+	if (!sv_vm)
+	{
+		return false;
+	}
+
+	old_self = pr_global_struct->self;
+	old_other = pr_global_struct->other;
+
+	payload->cursize = 0;
+	payload->overflowed = false;
+
+	PR2_CSQC_BeginWrite(client, payload);
+	pr_global_struct->self = EDICT_TO_PROG(ent);
+	pr_global_struct->other = client->edict ? EDICT_TO_PROG(client->edict) : 0;
+	result = VM_Call(sv_vm, 1, GAME_EDICT_CSQCSEND, sendflags, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+	PR2_CSQC_EndWrite();
+
+	pr_global_struct->self = old_self;
+	pr_global_struct->other = old_other;
+
+	if (payload->overflowed)
+	{
+		return false;
+	}
+
+	return result != 0;
+}
+#endif
+
+static void SV_EmitCSQCUpdate(client_t* client, sizebuf_t* msg, byte* pvs, byte* phs)
+{
+#ifndef USE_PR2
+	(void)client;
+	(void)msg;
+	(void)pvs;
+	(void)phs;
+#else
+	byte payload_data[MAX_MSGLEN];
+	sizebuf_t payload;
+	qbool wrote_header = false;
+	int entnum;
+	int csqc_packet_start = msg->cursize;
+	qbool use_sized = sv_csqc_sized.value != 0;
+	int csqc_update_overhead = (int)sizeof(short) + (use_sized ? (int)sizeof(short) : 0);
+
+	if (!SV_CSQC_ClientReady(client))
+	{
+		return;
+	}
+
+	SZ_InitEx(&payload, payload_data, sizeof(payload_data), true);
+
+	for (entnum = 1; entnum < sv.num_edicts && entnum < sv.max_edicts; entnum++)
+	{
+		edict_t* ent = EDICT_NUM(entnum);
+		unsigned int sendflags = client->pendingcsqcbits[entnum] & CSQC_SEND_FULLFLAGS;
+		qbool visible;
+		qbool have_entity = !ent->e.free && ent->xv.SendEntity;
+
+		if (!have_entity)
+		{
+			if (client->csqc_present[entnum] && !client->csqc_remove_retries[entnum])
+			{
+				client->csqc_remove_retries[entnum] = CSQC_RESEND_FRAMES;
+				client->csqc_present[entnum] = 0;
+			}
+
+			if (client->csqc_remove_retries[entnum])
+			{
+				if (!SV_CSQC_WriteHeaderAndDelta(msg, entnum, true, &wrote_header, use_sized, 0))
+				{
+					break;
+				}
+				client->csqc_stats_removes++;
+				client->csqc_remove_retries[entnum]--;
+			}
+
+			client->pendingcsqcbits[entnum] = 0;
+			client->csqc_resend[entnum] = 0;
+			continue;
+		}
+
+		visible = SV_CSQC_IsVisibleToClient(client, entnum, pvs, phs);
+
+		if (!visible)
+		{
+			if (client->csqc_present[entnum] && !((int)ent->xv.pvsflags & PVSF_NOREMOVE) && !client->csqc_remove_retries[entnum])
+			{
+				client->csqc_remove_retries[entnum] = CSQC_RESEND_FRAMES;
+				client->csqc_present[entnum] = 0;
+			}
+
+			if (client->csqc_remove_retries[entnum])
+			{
+				if (!SV_CSQC_WriteHeaderAndDelta(msg, entnum, true, &wrote_header, use_sized, 0))
+				{
+					break;
+				}
+				client->csqc_stats_removes++;
+				client->csqc_remove_retries[entnum]--;
+			}
+
+			continue;
+		}
+
+		client->csqc_remove_retries[entnum] = 0;
+
+		if (!client->csqc_present[entnum])
+		{
+			sendflags |= CSQC_SEND_FULLFLAGS;
+		}
+
+		if (!sendflags)
+		{
+			continue;
+		}
+
+		if (!client->csqc_resend[entnum])
+		{
+			client->csqc_resend[entnum] = CSQC_RESEND_FRAMES;
+		}
+
+		if (!SV_CSQC_CallSendEntity(client, ent, sendflags, &payload) || payload.cursize <= 0)
+		{
+			client->pendingcsqcbits[entnum] = 0;
+			client->csqc_resend[entnum] = 0;
+
+			if (client->csqc_present[entnum] && !((int)ent->xv.pvsflags & PVSF_NOREMOVE) && !client->csqc_remove_retries[entnum])
+			{
+				client->csqc_remove_retries[entnum] = CSQC_RESEND_FRAMES;
+				client->csqc_present[entnum] = 0;
+			}
+
+			continue;
+		}
+
+		if ((use_sized && payload.cursize > 0xFFFF) || (csqc_update_overhead + payload.cursize > msg->maxsize))
+		{
+			client->pendingcsqcbits[entnum] = 0;
+			client->csqc_resend[entnum] = 0;
+			continue;
+		}
+
+		if (msg->cursize + (wrote_header ? 0 : (int)sizeof(byte)) + csqc_update_overhead + payload.cursize + (int)sizeof(short) > msg->maxsize)
+		{
+			break;
+		}
+
+		if (!SV_CSQC_WriteHeaderAndDelta(msg, entnum, false, &wrote_header, use_sized, payload.cursize))
+		{
+			break;
+		}
+
+		SZ_Write(msg, payload.data, payload.cursize);
+		client->csqc_present[entnum] = 1;
+		client->csqc_stats_updates++;
+		client->csqc_stats_payload_bytes += (unsigned int)payload.cursize;
+		if (payload.cursize > 0)
+		{
+			switch (payload.data[0])
+			{
+			case CSQC_TYPE_WEAPONINFO:
+				client->csqc_stats_type_weaponinfo++;
+				break;
+			case CSQC_TYPE_PROJECTILE:
+				client->csqc_stats_type_projectile++;
+				if (!client->csqc_stats_projectile_reported)
+				{
+					client->csqc_stats_projectile_reported = true;
+					Con_Printf(
+						"CSQC-PROJECTILE: name=%s userid=%d type_projectile=%u updates=%u payload_bytes=%u\n",
+						client->name[0] ? client->name : "<unnamed>",
+						client->userid,
+						client->csqc_stats_type_projectile,
+						client->csqc_stats_updates,
+						client->csqc_stats_payload_bytes
+					);
+				}
+				break;
+			case CSQC_TYPE_WEAPONDEF:
+				client->csqc_stats_type_weapondef++;
+				break;
+			default:
+				client->csqc_stats_type_other++;
+				break;
+			}
+		}
+
+		if (client->csqc_resend[entnum] > 0)
+		{
+			client->csqc_resend[entnum]--;
+		}
+
+		if (client->csqc_resend[entnum] == 0)
+		{
+			client->pendingcsqcbits[entnum] = 0;
+		}
+	}
+
+	if (wrote_header)
+	{
+		client->csqc_stats_packets++;
+		MSG_WriteShort(msg, 0);
+		if (sv_csqc_debug_dump.value != 0)
+		{
+			SV_CSQC_LogPacketHex(client, msg, csqc_packet_start);
+		}
+
+		if (!client->csqc_stats_reported)
+		{
+			client->csqc_stats_reported = true;
+			Con_Printf(
+				"CSQC-ACTIVE: name=%s userid=%d active=%d packets=%u updates=%u removes=%u payload_bytes=%u type_weaponinfo=%u type_projectile=%u type_weapondef=%u type_other=%u\n",
+				client->name[0] ? client->name : "<unnamed>",
+				client->userid,
+				client->csqcactive ? 1 : 0,
+				client->csqc_stats_packets,
+				client->csqc_stats_updates,
+				client->csqc_stats_removes,
+				client->csqc_stats_payload_bytes,
+				client->csqc_stats_type_weaponinfo,
+				client->csqc_stats_type_projectile,
+				client->csqc_stats_type_weapondef,
+				client->csqc_stats_type_other
+			);
+		}
+	}
+#endif
+}
+
+void SV_CSQC_ProcessSendFlags(void)
+{
+	int i;
+	qbool have_csprogs = SV_CSQC_ServerHasProgs();
+
+	for (i = 0; i < MAX_CLIENTS; i++)
+	{
+		client_t* cl = &svs.clients[i];
+		if (!have_csprogs || cl->state != cs_spawned || !cl->csqcactive)
+		{
+			memset(cl->pendingcsqcbits, 0, sizeof(cl->pendingcsqcbits));
+			memset(cl->csqc_present, 0, sizeof(cl->csqc_present));
+			memset(cl->csqc_resend, 0, sizeof(cl->csqc_resend));
+			memset(cl->csqc_remove_retries, 0, sizeof(cl->csqc_remove_retries));
+			SV_CSQC_ResetClientStats(cl);
+		}
+	}
+}
+
+void SV_CSQC_SetSendNeeded(int subject, unsigned int sendflags, int to)
+{
+	int i;
+
+	sendflags &= CSQC_SEND_FULLFLAGS;
+	if (!SV_CSQC_ServerHasProgs() || !sendflags || subject < 1 || subject >= sv.max_edicts)
+	{
+		return;
+	}
+
+	if (to > 0)
+	{
+		i = to - 1;
+		if (i < 0 || i >= MAX_CLIENTS)
+		{
+			return;
+		}
+
+		if (SV_CSQC_ClientReady(&svs.clients[i]))
+		{
+			svs.clients[i].pendingcsqcbits[subject] |= sendflags;
+			svs.clients[i].csqc_resend[subject] = CSQC_RESEND_FRAMES;
+			svs.clients[i].csqc_stats_setsendneeded++;
+		}
+		return;
+	}
+
+	for (i = 0; i < MAX_CLIENTS; i++)
+	{
+		client_t* cl = &svs.clients[i];
+		if (!SV_CSQC_ClientReady(cl))
+		{
+			continue;
+		}
+		cl->pendingcsqcbits[subject] |= sendflags;
+		cl->csqc_resend[subject] = CSQC_RESEND_FRAMES;
+		cl->csqc_stats_setsendneeded++;
+	}
+}
+
 
 /*
 ==================
@@ -860,6 +1329,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 	entity_state_t *state;
 	edict_t *ent;
 	byte *pvs;
+	byte *phs;
 	int hideent;
 	unsigned int client_flag = (1 << (client - svs.clients));
 	edict_t	*clent = client->edict;
@@ -883,12 +1353,12 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 	{// demo
 		hideent = 0;
 		pvs = NULL; // ignore PVS for demos
+		phs = NULL;
 		max_packet_entities = MAX_MVD_PACKET_ENTITIES;
 		disable_updates = false; // updates always allowed in demos
 	}
 	else
 	{// normal client
-		vec3_t org;
 		int trackent = 0;
 
 		if (fofs_hideentity)
@@ -914,6 +1384,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 		}
 
 		pvs = CM_FatPVS (org); // search some PVS
+		phs = CM_LeafPHS(CM_PointInLeaf(org));
 		max_packet_entities = (client->fteprotocolextensions & FTE_PEXT_256PACKETENTITIES) ? MAX_PEXT256_PACKET_ENTITIES : MAX_PACKET_ENTITIES;
 
 		if (client->disable_updates_stop > realtime)
@@ -1044,6 +1515,10 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 	// last packetentities acknowledged by the client
 
 	SV_EmitPacketEntities (client, pack, msg);
+	if (!recorder)
+	{
+		SV_EmitCSQCUpdate(client, msg, pvs, phs);
+	}
 
 	// now add the specialized nail update
 	SV_EmitNailUpdate (msg, recorder);

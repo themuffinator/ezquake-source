@@ -328,6 +328,23 @@ typedef struct client_s
 	unsigned int    mvdprotocolextensions1;
 #endif
 
+	qbool			csqcactive;
+	unsigned int	pendingcsqcbits[MAX_EDICTS];
+	byte			csqc_present[MAX_EDICTS];
+	byte			csqc_resend[MAX_EDICTS];
+	byte			csqc_remove_retries[MAX_EDICTS];
+	unsigned int	csqc_stats_setsendneeded;
+	unsigned int	csqc_stats_packets;
+	unsigned int	csqc_stats_updates;
+	unsigned int	csqc_stats_removes;
+	unsigned int	csqc_stats_payload_bytes;
+	unsigned int	csqc_stats_type_weaponinfo;
+	unsigned int	csqc_stats_type_projectile;
+	unsigned int	csqc_stats_type_weapondef;
+	unsigned int	csqc_stats_type_other;
+	qbool			csqc_stats_reported;
+	qbool			csqc_stats_projectile_reported;
+
 #ifdef FTE_PEXT2_VOICECHAT
 	unsigned int voice_read;	/*place in ring*/
 	unsigned char voice_mute[MAX_CLIENTS/8];
@@ -670,6 +687,13 @@ typedef struct
 #define FL_LAGGEDMOVE			(1<<16)
 // }
 
+// CSQC visibility flags (ext field: pvsflags)
+#define PVSF_NOTRACECHECK		1
+#define PVSF_USEPHS				2
+#define PVSF_IGNOREPVS			3
+#define PVSF_MODE_MASK			3
+#define PVSF_NOREMOVE			128
+
 #define	SPAWNFLAG_NOT_EASY		256
 #define	SPAWNFLAG_NOT_MEDIUM		512
 #define	SPAWNFLAG_NOT_HARD		1024
@@ -711,6 +735,9 @@ extern	cvar_t	sv_paused; // 1 - normal, 2 - auto (single player), 3 - both
 extern	cvar_t	sv_maxspeed;
 extern	cvar_t	sv_mintic, sv_maxtic, sv_maxfps;
 extern	cvar_t	sv_antilag, sv_antilag_no_pred, sv_antilag_projectiles;
+extern	cvar_t	sv_csqc_progname;
+extern	cvar_t	sv_csqc_sized;
+extern	cvar_t	sv_csqc_debug_dump;
 
 extern	int current_skill;
 
@@ -915,6 +942,9 @@ void SV_KickClient(client_t* client, const char* reason);
 //
 void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder);
 void SV_SetVisibleEntitiesForBot (client_t* client);
+void SV_CSQC_ProcessSendFlags(void);
+void SV_CSQC_SetSendNeeded(int subject, unsigned int sendflags, int to);
+void SV_CSQC_LogClientSummary(client_t* client, const char* reason);
 
 //
 // sv_nchan.c

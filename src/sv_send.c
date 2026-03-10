@@ -1093,6 +1093,7 @@ void SV_SendClientMessages (void)
 
 	// update frags, names, etc
 	SV_UpdateToReliableMessages ();
+	SV_CSQC_ProcessSendFlags();
 
 	if (fofs_visibility) {
 		for (i = 0; i < MAX_CLIENTS; ++i) {

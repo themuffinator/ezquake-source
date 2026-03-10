@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "qmb_particles.h"
 #include "rulesets.h"
 #include "teamplay.h"
+#include "cl_csqc.h"
 
 static int MVD_TranslateFlags(int src);
 void TP_ParsePlayerInfo(player_state_t *, player_state_t *, player_info_t *info);	
@@ -851,6 +852,445 @@ void CL_ParsePacketEntities (qbool delta)
 		CL_MakeActive();
 	}
 }
+
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+enum {
+	CL_FTE_UF_FRAME = (1u << 0),
+	CL_FTE_UF_ORIGINXY = (1u << 1),
+	CL_FTE_UF_ORIGINZ = (1u << 2),
+	CL_FTE_UF_ANGLESXZ = (1u << 3),
+	CL_FTE_UF_ANGLESY = (1u << 4),
+	CL_FTE_UF_EFFECTS = (1u << 5),
+	CL_FTE_UF_PREDINFO = (1u << 6),
+	CL_FTE_UF_EXTEND1 = (1u << 7),
+	CL_FTE_UF_RESET = (1u << 8),
+	CL_FTE_UF_16BIT = (1u << 9),
+	CL_FTE_UF_MODEL = (1u << 10),
+	CL_FTE_UF_SKIN = (1u << 11),
+	CL_FTE_UF_COLORMAP = (1u << 12),
+	CL_FTE_UF_SOLID = (1u << 13),
+	CL_FTE_UF_FLAGS = (1u << 14),
+	CL_FTE_UF_EXTEND2 = (1u << 15),
+	CL_FTE_UF_ALPHA = (1u << 16),
+	CL_FTE_UF_SCALE = (1u << 17),
+	CL_FTE_UF_BONEDATA = (1u << 18),
+	CL_FTE_UF_DRAWFLAGS = (1u << 19),
+	CL_FTE_UF_TAGINFO = (1u << 20),
+	CL_FTE_UF_LIGHT = (1u << 21),
+	CL_FTE_UF_TRAILEFFECT = (1u << 22),
+	CL_FTE_UF_EXTEND3 = (1u << 23),
+	CL_FTE_UF_COLORMOD = (1u << 24),
+	CL_FTE_UF_GLOW = (1u << 25),
+	CL_FTE_UF_FATNESS = (1u << 26),
+	CL_FTE_UF_MODELINDEX2 = (1u << 27),
+	CL_FTE_UF_GRAVITYDIR = (1u << 28),
+	CL_FTE_UF_EFFECTS2_OLD = (1u << 29),
+	CL_FTE_UF_UNUSED1 = (1u << 30)
+};
+
+enum {
+	CL_FTE_UFP_FORWARD = (1u << 0),
+	CL_FTE_UFP_SIDE = (1u << 1),
+	CL_FTE_UFP_UP = (1u << 2),
+	CL_FTE_UFP_MOVETYPE = (1u << 3),
+	CL_FTE_UFP_VELOCITYXY = (1u << 4),
+	CL_FTE_UFP_VELOCITYZ = (1u << 5),
+	CL_FTE_UFP_MSEC = (1u << 6),
+	CL_FTE_UFP_WEAPONFRAME_OLD = (1u << 7)
+};
+
+static unsigned int CL_FTE_ReadUpdateEntityNum(qbool* remove)
+{
+	unsigned int raw = (unsigned short)MSG_ReadShort();
+
+	*remove = (raw & 0x8000u) != 0;
+	if (raw & 0x4000u) {
+		raw = (raw & 0x3fffu) | ((unsigned int)MSG_ReadByte() << 14);
+	}
+	else {
+		raw &= 0x3fffu;
+	}
+
+	return raw;
+}
+
+static unsigned int CL_FTE_ReadBigEntityRef(void)
+{
+	unsigned int num = (unsigned short)MSG_ReadShort();
+	if (num & 0x8000u) {
+		num = ((num & 0x7fffu) << 8) | (unsigned int)MSG_ReadByte();
+	}
+	return num;
+}
+
+static void CL_FTE_SkipPrediction(unsigned int predbits)
+{
+	int weaponframe;
+
+	if (predbits & CL_FTE_UFP_FORWARD) {
+		MSG_ReadShort();
+	}
+	if (predbits & CL_FTE_UFP_SIDE) {
+		MSG_ReadShort();
+	}
+	if (predbits & CL_FTE_UFP_UP) {
+		MSG_ReadShort();
+	}
+	if (predbits & CL_FTE_UFP_MOVETYPE) {
+		MSG_ReadByte();
+	}
+	if (predbits & CL_FTE_UFP_VELOCITYXY) {
+		MSG_ReadShort();
+		MSG_ReadShort();
+	}
+	if (predbits & CL_FTE_UFP_VELOCITYZ) {
+		MSG_ReadShort();
+	}
+	if (predbits & CL_FTE_UFP_MSEC) {
+		MSG_ReadByte();
+	}
+	if (predbits & CL_FTE_UFP_WEAPONFRAME_OLD) {
+		weaponframe = MSG_ReadByte();
+		if (weaponframe & 0x80) {
+			MSG_ReadByte();
+		}
+	}
+}
+
+static qbool CL_FTE_ParseDeltaEntity(const entity_state_t* from, entity_state_t* to, unsigned int entnum)
+{
+	unsigned int bits;
+	unsigned int predbits = 0;
+	qbool predinfo_extension = false;
+	int drawflags;
+	unsigned int bonecount;
+	unsigned int trailflags;
+
+	*to = *from;
+	to->number = entnum;
+
+	bits = (unsigned int)MSG_ReadByte();
+	if (bits & CL_FTE_UF_EXTEND1) {
+		bits |= (unsigned int)MSG_ReadByte() << 8;
+	}
+	if (bits & CL_FTE_UF_EXTEND2) {
+		bits |= (unsigned int)MSG_ReadByte() << 16;
+	}
+	if (bits & CL_FTE_UF_EXTEND3) {
+		bits |= (unsigned int)MSG_ReadByte() << 24;
+	}
+
+	#ifdef FTE_PEXT2_PREDINFO
+	predinfo_extension = (cls.fteprotocolextensions2 & FTE_PEXT2_PREDINFO) != 0;
+	#endif
+
+	if (bits & CL_FTE_UF_RESET) {
+		if (entnum < CL_MAX_EDICTS) {
+			*to = cl_entities[entnum].baseline;
+		}
+		else {
+			memset(to, 0, sizeof(*to));
+			to->number = entnum;
+		}
+	}
+
+	if (bits & CL_FTE_UF_FRAME) {
+		to->frame = (bits & CL_FTE_UF_16BIT) ? MSG_ReadShort() : MSG_ReadByte();
+	}
+
+	if (bits & CL_FTE_UF_ORIGINXY) {
+		to->origin[0] = MSG_ReadCoord();
+		to->origin[1] = MSG_ReadCoord();
+	}
+	if (bits & CL_FTE_UF_ORIGINZ) {
+		to->origin[2] = MSG_ReadCoord();
+	}
+
+	if ((bits & CL_FTE_UF_PREDINFO) && !predinfo_extension) {
+		if (bits & CL_FTE_UF_ANGLESXZ) {
+			to->angles[0] = MSG_ReadAngle16();
+			to->angles[2] = MSG_ReadAngle16();
+		}
+		if (bits & CL_FTE_UF_ANGLESY) {
+			to->angles[1] = MSG_ReadAngle16();
+		}
+	}
+	else {
+		if (bits & CL_FTE_UF_ANGLESXZ) {
+			to->angles[0] = MSG_ReadAngle();
+			to->angles[2] = MSG_ReadAngle();
+		}
+		if (bits & CL_FTE_UF_ANGLESY) {
+			to->angles[1] = MSG_ReadAngle();
+		}
+	}
+
+	if ((bits & (CL_FTE_UF_EFFECTS | CL_FTE_UF_EFFECTS2_OLD)) == (CL_FTE_UF_EFFECTS | CL_FTE_UF_EFFECTS2_OLD)) {
+		to->effects = MSG_ReadLong();
+	}
+	else if (bits & CL_FTE_UF_EFFECTS2_OLD) {
+		to->effects = (unsigned short)MSG_ReadShort();
+	}
+	else if (bits & CL_FTE_UF_EFFECTS) {
+		to->effects = MSG_ReadByte();
+	}
+
+	if (bits & CL_FTE_UF_PREDINFO) {
+		predbits = (unsigned int)MSG_ReadByte();
+		CL_FTE_SkipPrediction(predbits);
+	}
+
+	if (bits & CL_FTE_UF_MODEL) {
+		to->modelindex = (bits & CL_FTE_UF_16BIT) ? MSG_ReadShort() : MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_SKIN) {
+		to->skinnum = (bits & CL_FTE_UF_16BIT) ? MSG_ReadShort() : MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_COLORMAP) {
+		to->colormap = MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_SOLID) {
+		MSG_ReadShort();
+	}
+	if (bits & CL_FTE_UF_FLAGS) {
+		MSG_ReadByte();
+	}
+
+#ifdef FTE_PEXT_TRANS
+	if (bits & CL_FTE_UF_ALPHA) {
+		to->trans = MSG_ReadByte();
+	}
+#else
+	if (bits & CL_FTE_UF_ALPHA) {
+		MSG_ReadByte();
+	}
+#endif
+
+	if (bits & CL_FTE_UF_SCALE) {
+		MSG_ReadByte();
+	}
+
+	if (bits & CL_FTE_UF_BONEDATA) {
+		unsigned int bonedata_flags = (unsigned int)MSG_ReadByte();
+		if (bonedata_flags & 0x80u) {
+			bonecount = (unsigned int)MSG_ReadByte();
+			while (bonecount--) {
+				int i;
+				for (i = 0; i < 7; ++i) {
+					MSG_ReadShort();
+				}
+			}
+		}
+		if (bonedata_flags & 0x40u) {
+			MSG_ReadByte();
+			MSG_ReadShort();
+		}
+	}
+
+	if (bits & CL_FTE_UF_DRAWFLAGS) {
+		drawflags = MSG_ReadByte();
+		if ((drawflags & 7) == 7) {
+			MSG_ReadByte();
+		}
+	}
+	if (bits & CL_FTE_UF_TAGINFO) {
+		CL_FTE_ReadBigEntityRef();
+		MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_LIGHT) {
+		MSG_ReadShort();
+		MSG_ReadShort();
+		MSG_ReadShort();
+		MSG_ReadShort();
+		MSG_ReadByte();
+		MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_TRAILEFFECT) {
+		trailflags = (unsigned short)MSG_ReadShort();
+		if (trailflags & 0x8000u) {
+			MSG_ReadShort();
+		}
+	}
+
+#ifdef FTE_PEXT_COLOURMOD
+	if (bits & CL_FTE_UF_COLORMOD) {
+		to->colourmod[0] = MSG_ReadByte();
+		to->colourmod[1] = MSG_ReadByte();
+		to->colourmod[2] = MSG_ReadByte();
+	}
+#else
+	if (bits & CL_FTE_UF_COLORMOD) {
+		MSG_ReadByte();
+		MSG_ReadByte();
+		MSG_ReadByte();
+	}
+#endif
+
+	if (bits & CL_FTE_UF_GLOW) {
+		MSG_ReadByte();
+		MSG_ReadByte();
+		MSG_ReadByte();
+		MSG_ReadByte();
+		MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_FATNESS) {
+		MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_MODELINDEX2) {
+		(bits & CL_FTE_UF_16BIT) ? MSG_ReadShort() : MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_GRAVITYDIR) {
+		MSG_ReadByte();
+		MSG_ReadByte();
+	}
+	if (bits & CL_FTE_UF_UNUSED1) {
+		return false;
+	}
+
+	return !msg_badread;
+}
+
+qbool CL_ParseFTEBaselineDelta(entity_state_t* to, qbool numbered)
+{
+	entity_state_t from;
+	unsigned int entnum = 0;
+
+	memset(&from, 0, sizeof(from));
+	memset(to, 0, sizeof(*to));
+
+	if (numbered) {
+		entnum = CL_FTE_ReadBigEntityRef();
+		if (msg_badread) {
+			return false;
+		}
+	}
+
+	if (entnum < CL_MAX_EDICTS) {
+		from = cl_entities[entnum].baseline;
+	}
+	from.number = entnum;
+
+	return CL_FTE_ParseDeltaEntity(&from, to, entnum);
+}
+
+void CL_ParseFTEUpdateEntities(void)
+{
+	int oldpacket, newpacket, oldindex, newindex, maxentities;
+	unsigned int entnum, oldnum;
+	packet_entities_t* oldp;
+	packet_entities_t* newp;
+	packet_entities_t dummy;
+	qbool remove;
+	entity_state_t from;
+
+	newpacket = cls.netchan.incoming_sequence & UPDATE_MASK;
+	newp = &cl.frames[newpacket].packet_entities;
+	cl.frames[newpacket].invalid = false;
+	cl.frames[newpacket].in_qwd = false;
+
+	cl.servertime = MSG_ReadFloat();
+	if (msg_badread) {
+		Host_Error("msg_badread in svcfte_updateentities time");
+		return;
+	}
+
+	if (cl.validsequence && (cls.netchan.outgoing_sequence - cl.validsequence < UPDATE_BACKUP - 1)) {
+		oldpacket = cl.validsequence & UPDATE_MASK;
+		oldp = &cl.frames[oldpacket].packet_entities;
+	}
+	else {
+		memset(&dummy, 0, sizeof(dummy));
+		oldp = &dummy;
+	}
+
+	oldindex = 0;
+	newindex = 0;
+	maxentities = MAX_MVD_PACKET_ENTITIES;
+	newp->num_entities = 0;
+
+	while (1) {
+		entnum = CL_FTE_ReadUpdateEntityNum(&remove);
+		if (msg_badread) {
+			Host_Error("msg_badread in svcfte_updateentities");
+			return;
+		}
+
+		if (!remove && entnum == 0) {
+			while (oldindex < oldp->num_entities) {
+				if (newindex >= maxentities) {
+					Host_Error("CL_ParseFTEUpdateEntities: newindex == MAX_PACKET_ENTITIES");
+				}
+				newp->entities[newindex] = oldp->entities[oldindex];
+				CL_SetupPacketEntity(newp->entities[newindex].number, &newp->entities[newindex], false);
+				++newindex;
+				++oldindex;
+			}
+			break;
+		}
+
+		oldnum = oldindex >= oldp->num_entities ? 0xffffffffu : (unsigned int)oldp->entities[oldindex].number;
+		while (entnum > oldnum) {
+			if (newindex >= maxentities) {
+				Host_Error("CL_ParseFTEUpdateEntities: newindex == MAX_PACKET_ENTITIES");
+			}
+			newp->entities[newindex] = oldp->entities[oldindex];
+			CL_SetupPacketEntity(newp->entities[newindex].number, &newp->entities[newindex], false);
+			++newindex;
+			++oldindex;
+			oldnum = oldindex >= oldp->num_entities ? 0xffffffffu : (unsigned int)oldp->entities[oldindex].number;
+		}
+
+		if (remove) {
+			if (!entnum) {
+				memset(&dummy, 0, sizeof(dummy));
+				oldp = &dummy;
+				oldindex = 0;
+				newindex = 0;
+				newp->num_entities = 0;
+				continue;
+			}
+
+			if (entnum == oldnum) {
+				++oldindex;
+			}
+			continue;
+		}
+
+		if (newindex >= maxentities) {
+			Host_Error("CL_ParseFTEUpdateEntities: newindex == MAX_PACKET_ENTITIES");
+		}
+
+		if (entnum == oldnum) {
+			from = oldp->entities[oldindex];
+			++oldindex;
+		}
+		else if (entnum < CL_MAX_EDICTS) {
+			from = cl_entities[entnum].baseline;
+		}
+		else {
+			memset(&from, 0, sizeof(from));
+			from.number = entnum;
+		}
+
+		if (!CL_FTE_ParseDeltaEntity(&from, &newp->entities[newindex], entnum)) {
+			Host_Error("msg_badread in svcfte_updateentities delta");
+			return;
+		}
+
+		CL_SetupPacketEntity(entnum, &newp->entities[newindex], true);
+		++newindex;
+	}
+
+	newp->num_entities = newindex;
+	cl.oldvalidsequence = cl.validsequence;
+	cl.validsequence = cls.netchan.incoming_sequence;
+	cl.delta_sequence = cl.validsequence;
+
+	if (cls.state == ca_onserver) {
+		CL_MakeActive();
+	}
+}
+#endif
 
 static qbool CL_SetAlphaByDistance(entity_t* ent)
 {
@@ -2279,6 +2719,7 @@ void CL_EmitEntities (void)
 		CL_LinkPlayers();
 		CL_LinkPacketEntities();
 		CL_LinkProjectiles();
+		CL_CSQC_LinkEntities();
 	}
 
 	CL_UpdateTEnts();

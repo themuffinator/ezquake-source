@@ -2428,6 +2428,25 @@ void ProcessUserInfoChange (client_t* sv_client, const char* key, const char* ol
 	// process any changed values
 	SV_ExtractFromUserinfo (sv_client, !strcmp(key, "name"));
 
+#ifdef FTE_PEXT_CSQC
+	if (!strcmp(key, "csqcactive") || !strcmp(key, "*csqcactive"))
+	{
+		const char* value = Info_Get(&sv_client->_userinfo_ctx_, key);
+		sv_client->csqcactive = ((sv_client->fteprotocolextensions & FTE_PEXT_CSQC) != 0) && Q_atoi(value);
+		if (!*Info_ValueForKey(svs.info, "*csprogs"))
+		{
+			sv_client->csqcactive = false;
+		}
+		if (!sv_client->csqcactive)
+		{
+			memset(sv_client->pendingcsqcbits, 0, sizeof(sv_client->pendingcsqcbits));
+			memset(sv_client->csqc_present, 0, sizeof(sv_client->csqc_present));
+			memset(sv_client->csqc_resend, 0, sizeof(sv_client->csqc_resend));
+			memset(sv_client->csqc_remove_retries, 0, sizeof(sv_client->csqc_remove_retries));
+		}
+	}
+#endif
+
 	if (mod_UserInfo_Changed)
 	{
 		pr_global_struct->time = sv.time;
@@ -3131,6 +3150,21 @@ void Cmd_PEXT_f(void)
 #endif
 		}
 	}
+
+#ifdef FTE_PEXT_CSQC
+	sv_client->csqcactive = (sv_client->fteprotocolextensions & FTE_PEXT_CSQC) != 0;
+	if (!*Info_ValueForKey(svs.info, "*csprogs"))
+	{
+		sv_client->csqcactive = false;
+	}
+	if (!sv_client->csqcactive)
+	{
+		memset(sv_client->pendingcsqcbits, 0, sizeof(sv_client->pendingcsqcbits));
+		memset(sv_client->csqc_present, 0, sizeof(sv_client->csqc_present));
+		memset(sv_client->csqc_resend, 0, sizeof(sv_client->csqc_resend));
+		memset(sv_client->csqc_remove_retries, 0, sizeof(sv_client->csqc_remove_retries));
+	}
+#endif
 
 	// we are ready for new command now.
 	MSG_WriteByte (&sv_client->netchan.message, svc_stufftext);

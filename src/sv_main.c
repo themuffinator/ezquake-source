@@ -194,6 +194,12 @@ cvar_t sv_pext_mvdsv_serversideweapon = { "sv_pext_mvdsv_serversideweapon", "1" 
 
 cvar_t sv_extlimits = { "sv_extlimits", "2" };
 
+#ifdef FTE_PEXT_CSQC
+cvar_t sv_csqc_progname = { "sv_csqc_progname", "csprogs.dat" };
+cvar_t sv_csqc_sized = { "sv_csqc_sized", "0" };
+cvar_t sv_csqc_debug_dump = { "sv_csqc_debug_dump", "0" };
+#endif
+
 #if defined(FTE_PEXT_TRANS)
 cvar_t sv_pext_ezquake_verfortrans = {"pext_ezquake_verfortrans", "7814", CVAR_NONE};
 #endif
@@ -393,6 +399,8 @@ void SV_DropClient(client_t* drop)
 		Con_Printf ("Spectator %s removed\n",drop->name);
 	else
 		Con_Printf ("Client %s removed\n",drop->name);
+
+	SV_CSQC_LogClientSummary(drop, "drop");
 
 	if (drop->download)
 	{
@@ -1361,6 +1369,12 @@ static void SVC_DirectConnect (void)
 
 #ifdef PROTOCOL_VERSION_MVD1
 	newcl->mvdprotocolextensions1 = mvdext_supported1;
+#endif
+
+#ifdef FTE_PEXT_CSQC
+	newcl->csqcactive = (newcl->fteprotocolextensions & FTE_PEXT_CSQC) != 0;
+	if (!*Info_ValueForKey(svs.info, "*csprogs"))
+		newcl->csqcactive = false;
 #endif
 
 	newcl->_userinfo_ctx_.max      = MAX_CLIENT_INFOS;
@@ -3502,6 +3516,11 @@ void SV_InitLocal (void)
 #endif
 
 	Cvar_Register (&sv_extlimits);
+#ifdef FTE_PEXT_CSQC
+	Cvar_Register (&sv_csqc_progname);
+	Cvar_Register (&sv_csqc_sized);
+	Cvar_Register (&sv_csqc_debug_dump);
+#endif
 #ifdef MVD_PEXT1_SERVERSIDEWEAPON
 	Cvar_Register (&sv_pext_mvdsv_serversideweapon);
 #endif
@@ -3557,6 +3576,9 @@ void SV_InitLocal (void)
 #endif
 #ifdef FTE_PEXT_CHUNKEDDOWNLOADS
 	svs.fteprotocolextensions |= FTE_PEXT_CHUNKEDDOWNLOADS;
+#endif
+#ifdef FTE_PEXT_CSQC
+	svs.fteprotocolextensions |= FTE_PEXT_CSQC;
 #endif
 #ifdef FTE_PEXT_FLOATCOORDS
 	svs.fteprotocolextensions |= FTE_PEXT_FLOATCOORDS;

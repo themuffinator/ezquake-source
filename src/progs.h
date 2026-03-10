@@ -67,6 +67,8 @@ typedef struct
 {
 	float	alpha;			// 0 = opaque, 1 = opaque, 0 < x < 1 translucent
 	float	colourmod[3];	// r,g,b [0.0 .. 1.0], > 1 overbright
+	int		SendEntity;		// non-zero when entity should use CSQC SendEntity transport
+	float	pvsflags;		// visibility behavior flags for CSQC transport
 } ext_entvars_t;
 
 typedef struct edict_s

@@ -206,6 +206,53 @@ static unsigned SV_CheckModel(char *mdl)
 	return crc;
 }
 
+static void SV_UpdateCSProgsInfo(void)
+{
+#ifdef FTE_PEXT_CSQC
+	const char *csprogsname = sv_csqc_progname.string;
+	unsigned char *buf = NULL;
+	unsigned int checksum = 0;
+	int filesize = 0;
+	int mark = Hunk_LowMark();
+
+	if (csprogsname && csprogsname[0])
+	{
+		buf = (byte *)FS_LoadHunkFile((char *)csprogsname, &filesize);
+		if (buf && filesize > 0)
+		{
+			/*
+			 * FTE validates QW CSQC modules against a folded MD4 checksum
+			 * (not CRC16). Advertising the same format via *csprogs keeps
+			 * ezQuake/FTE interop deterministic.
+			 */
+			checksum = Com_BlockChecksum(buf, filesize);
+		}
+	}
+
+	Hunk_FreeToLowMark(mark);
+
+	if (checksum && filesize > 0)
+	{
+		Info_SetValueForStarKey(svs.info, "*csprogs", va("%u", checksum), MAX_SERVERINFO_STRING);
+		Info_SetValueForStarKey(svs.info, "*csprogssize", va("%d", filesize), MAX_SERVERINFO_STRING);
+		if (!strcmp(csprogsname, "csprogs.dat"))
+		{
+			Info_SetValueForStarKey(svs.info, "*csprogsname", "", MAX_SERVERINFO_STRING);
+		}
+		else
+		{
+			Info_SetValueForStarKey(svs.info, "*csprogsname", csprogsname, MAX_SERVERINFO_STRING);
+		}
+	}
+	else
+	{
+		Info_SetValueForStarKey(svs.info, "*csprogs", "", MAX_SERVERINFO_STRING);
+		Info_SetValueForStarKey(svs.info, "*csprogssize", "", MAX_SERVERINFO_STRING);
+		Info_SetValueForStarKey(svs.info, "*csprogsname", "", MAX_SERVERINFO_STRING);
+	}
+#endif
+}
+
 /*
 ================
 SV_SpawnServer
@@ -628,6 +675,7 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 	sv.signon_buffer_size[sv.num_signon_buffers-1] = sv.signon.cursize;
 
 	Info_SetValueForKey (svs.info, "map", sv.mapname, MAX_SERVERINFO_STRING);
+	SV_UpdateCSProgsInfo();
 
 	// calltimeofday.
 	{

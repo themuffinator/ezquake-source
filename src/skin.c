@@ -448,6 +448,10 @@ void Skin_NextDownload(void)
 	if (cls.state == ca_onserver /* && cbuf_current != &cbuf_main */) {	//only download when connecting
 		MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
 		MSG_WriteString(&cls.netchan.message, va("begin %i", cl.servercount));
+		Com_DPrintf("Skin_NextDownload: sent begin %i (state=%d)\n", cl.servercount, cls.state);
+	}
+	else {
+		Com_DPrintf("Skin_NextDownload: begin suppressed (state=%d)\n", cls.state);
 	}
 }
 

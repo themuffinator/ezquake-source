@@ -1,0 +1,5 @@
+"scenario_id","status","evidence","notes"
+"P2-FTE-BOOT","pass","E:\_RE\runtime\phase2-matrix-alt\20260310_141945\P2-FTE-BOOT","csprogs=yes; pext=yes; updates=8; projectile=0"
+"P2-FTE-ENDURANCE","pass","E:\_RE\runtime\phase2-matrix-alt\20260310_141945\P2-FTE-ENDURANCE","updates=8; fatal_server=no; fatal_fte=no"
+"P2-FTE-LOSS-RESEND","pass","E:\_RE\runtime\phase2-matrix-alt\20260310_141945\P2-FTE-LOSS-RESEND","proxy_in=2624; proxy_drop=136; updates=8; projectile_lines=1; timeout=no; fte_load_failed=no; fte_runtime_failed=no; fatal_server=no"
+"P2-LEGACY-NONCSQC","pass","E:\_RE\runtime\phase2-matrix-alt\20260310_141945\P2-LEGACY-NONCSQC","legacy_ext_without_csqc=yes; joined=yes"

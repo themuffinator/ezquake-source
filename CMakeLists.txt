@@ -577,6 +577,7 @@ set(client_headers
         ${SOURCE_DIR}/EX_browser.h
         ${SOURCE_DIR}/EX_qtvlist.h
         ${SOURCE_DIR}/cdaudio.h
+        ${SOURCE_DIR}/cl_csqc.h
         ${SOURCE_DIR}/cl_slist.h
         ${SOURCE_DIR}/cl_view.h
         ${SOURCE_DIR}/client.h
@@ -651,6 +652,7 @@ set(client
         ${SOURCE_DIR}/EX_qtvlist.c
         ${SOURCE_DIR}/cd_null.c
         ${SOURCE_DIR}/cl_cam.c
+        ${SOURCE_DIR}/cl_csqc.c
         ${SOURCE_DIR}/cl_cmd.c
         ${SOURCE_DIR}/cl_demo.c
         ${SOURCE_DIR}/cl_ents.c

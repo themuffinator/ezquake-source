@@ -23,9 +23,14 @@
 #define __PR2_H__
 
 
+struct client_s;
+
 intptr_t PR2_GameSystemCalls( intptr_t *args );
 extern cvar_t sv_progtype;
 extern vm_t* sv_vm;
+
+void PR2_CSQC_BeginWrite(struct client_s *client, sizebuf_t *msg);
+void PR2_CSQC_EndWrite(void);
 
 
 void		PR2_Init(void);

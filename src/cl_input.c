@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "input.h"
 #include "pmove.h"		// PM_FLY etc
 #include "rulesets.h"
+#include "cl_csqc.h"
 
 static void IN_AttackUp_CommonHide(void);
 
@@ -1096,6 +1097,7 @@ void CL_SendCmd(void)
 	}
 
 	CL_FinishMove(cmd);
+	CL_CSQC_InputFrame(cmd);
 	cmdtime_msec += cmd->msec;
 
 	Cam_FinishMove(cmd);

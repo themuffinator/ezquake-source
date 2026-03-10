@@ -1,0 +1,3 @@
+"scenario_id","status","evidence","notes"
+"P3-FTE-SAMPLE-STREAM","pass","E:\_RE\runtime\phase3-interop\reports\phase3_fte_server_probe_20260310_141744.txt","exit=0; report=E:\_RE\runtime\phase3-interop\reports\phase3_fte_server_probe_20260310_141744.txt; report_pass=True; fatal_hits=0; disconnect_loops=0"
+"P3-FTE-KTX-BOOTSTRAP","pass","E:\_RE\runtime\phase3-interop\reports\phase3_fte_ktx_probe_20260310_141838.txt","exit=0; report=E:\_RE\runtime\phase3-interop\reports\phase3_fte_ktx_probe_20260310_141838.txt; bootstrap_pass=True; session_stable=True; fatal_hits=0"

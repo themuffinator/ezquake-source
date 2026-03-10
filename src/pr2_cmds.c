@@ -55,18 +55,24 @@ static float GETFLOAT(int i)
 #endif
 
 typedef intptr_t (*ext_syscall_t)(intptr_t *arg);
+static intptr_t EXT_SetExtField(intptr_t *args);
+static intptr_t EXT_GetExtField(intptr_t *args);
 static intptr_t EXT_MapExtFieldPtr(intptr_t *args);
 static intptr_t EXT_SetExtFieldPtr(intptr_t *args);
 static intptr_t EXT_GetExtFieldPtr(intptr_t *args);
+static intptr_t EXT_SetSendNeeded(intptr_t *args);
 struct
 {
 	char *extname;
 	ext_syscall_t fun;
 } ext_syscalls[] =
 {
+	{"SetExtField",		EXT_SetExtField},
+	{"GetExtField",		EXT_GetExtField},
 	{"MapExtFieldPtr",	EXT_MapExtFieldPtr},
 	{"SetExtFieldPtr",	EXT_SetExtFieldPtr},
 	{"GetExtFieldPtr",	EXT_GetExtFieldPtr},
+	{"setsendneeded",	EXT_SetSendNeeded},
 };
 ext_syscall_t ext_syscall_tbl[256];
 
@@ -159,13 +165,35 @@ void PR2_CheckEmptyString(char *s)
 		PR2_RunError("Bad string");
 }
 
+static qbool PR2_AllowLatePrecache(const char* kind, const char* name)
+{
+	static qbool warned;
+
+	if (sv.state == ss_loading) {
+		return true;
+	}
+
+	/*
+	 * KTX QVM currently issues some precache calls after load transition.
+	 * Keep server alive and accept idempotent late precache rather than
+	 * hard-aborting match startup.
+	 */
+	if (!warned) {
+		warned = true;
+		Con_Printf("PR2: allowing late %s precache while sv.state=%d (%s)\n",
+			kind, sv.state, name ? name : "");
+	}
+
+	return true;
+}
+
 void PF2_precache_sound(char *s)
 {
 	int i;
 
-	if (sv.state != ss_loading)
-		PR2_RunError("PF_Precache_*: Precache can only be done in spawn "
-		             "functions");
+	if (!PR2_AllowLatePrecache("sound", s)) {
+		return;
+	}
 	PR2_CheckEmptyString(s);
 
 	for (i = 0; i < MAX_SOUNDS; i++)
@@ -186,9 +214,9 @@ void PF2_precache_model(char *s)
 {
 	int 	i;
 
-	if (sv.state != ss_loading)
-		PR2_RunError("PF_Precache_*: Precache can only be done in spawn "
-		             "functions");
+	if (!PR2_AllowLatePrecache("model", s)) {
+		return;
+	}
 
 	PR2_CheckEmptyString(s);
 
@@ -210,9 +238,9 @@ intptr_t PF2_precache_vwep_model(char *s)
 {
 	int 	i;
 
-	if (sv.state != ss_loading)
-		PR2_RunError("PF_Precache_*: Precache can only be done in spawn "
-		             "functions");
+	if (!PR2_AllowLatePrecache("vwep", s)) {
+		return 0;
+	}
 
 	PR2_CheckEmptyString(s);
 
@@ -1171,6 +1199,22 @@ MESSAGE WRITING
 #define	MSG_ALL			2		// reliable to all
 #define	MSG_INIT		3		// write to the init string
 #define	MSG_MULTICAST	4		// for multicast()
+#define	MSG_CSQC		5		// for csqc sendentity payloads
+
+static sizebuf_t *csqc_write_dest;
+static client_t *csqc_write_client;
+
+void PR2_CSQC_BeginWrite(client_t *client, sizebuf_t *msg)
+{
+	csqc_write_client = client;
+	csqc_write_dest = msg;
+}
+
+void PR2_CSQC_EndWrite(void)
+{
+	csqc_write_client = NULL;
+	csqc_write_dest = NULL;
+}
 
 
 sizebuf_t *WriteDest2(int dest)
@@ -1206,6 +1250,13 @@ sizebuf_t *WriteDest2(int dest)
 
 	case MSG_MULTICAST:
 		return &sv.multicast;
+
+	case MSG_CSQC:
+		if (!csqc_write_dest || !csqc_write_client)
+		{
+			PR2_RunError("WriteDest: MSG_CSQC outside SendEntity");
+		}
+		return csqc_write_dest;
 
 	default:
 		PR2_RunError ("WriteDest: bad destination");
@@ -1996,6 +2047,92 @@ static qbool ValidateExtFieldToken(uint32_t token, uint32_t *offset)
 	return (token & cookie) == cookie;
 }
 
+static size_t ExtFieldOffsetByName(const char *key)
+{
+	if (!key)
+	{
+		return (size_t)-1;
+	}
+	if (!strcmp(key, "alpha"))
+	{
+		return offsetof(ext_entvars_t, alpha);
+	}
+	if (!strcmp(key, "colormod"))
+	{
+		return offsetof(ext_entvars_t, colourmod);
+	}
+	if (!strcmp(key, "SendEntity"))
+	{
+		return offsetof(ext_entvars_t, SendEntity);
+	}
+	if (!strcmp(key, "pvsflags"))
+	{
+		return offsetof(ext_entvars_t, pvsflags);
+	}
+	return (size_t)-1;
+}
+
+static intptr_t EXT_SetExtField(intptr_t *args)
+{
+	edict_t *e = &sv.edicts[NUM_FOR_GAME_EDICT(VM_ArgPtr(args[1]))];
+	char *key = VM_ArgPtr(args[2]);
+	floatint_t value;
+
+	value.i = args[3];
+
+	if (!key)
+	{
+		return 0;
+	}
+
+	if (!strcmp(key, "alpha"))
+	{
+		e->xv.alpha = value.f;
+		return args[3];
+	}
+	if (!strcmp(key, "SendEntity"))
+	{
+		e->xv.SendEntity = args[3] ? 1 : 0;
+		return e->xv.SendEntity;
+	}
+	if (!strcmp(key, "pvsflags"))
+	{
+		e->xv.pvsflags = value.f;
+		return args[3];
+	}
+
+	return 0;
+}
+
+static intptr_t EXT_GetExtField(intptr_t *args)
+{
+	edict_t *e = &sv.edicts[NUM_FOR_GAME_EDICT(VM_ArgPtr(args[1]))];
+	char *key = VM_ArgPtr(args[2]);
+	floatint_t value;
+
+	if (!key)
+	{
+		return 0;
+	}
+
+	if (!strcmp(key, "alpha"))
+	{
+		value.f = e->xv.alpha;
+		return value.i;
+	}
+	if (!strcmp(key, "SendEntity"))
+	{
+		return e->xv.SendEntity;
+	}
+	if (!strcmp(key, "pvsflags"))
+	{
+		value.f = e->xv.pvsflags;
+		return value.i;
+	}
+
+	return 0;
+}
+
 static intptr_t EXT_SetExtFieldPtr(intptr_t *args)
 {
 	uint32_t field_ref;
@@ -2051,18 +2188,22 @@ static intptr_t EXT_GetExtFieldPtr(intptr_t *args)
 static intptr_t EXT_MapExtFieldPtr(intptr_t *args)
 {
 	char *key = VM_ArgPtr(args[1]);
-	if (key)
+	size_t offset = ExtFieldOffsetByName(key);
+	if (offset != (size_t)-1)
 	{
-		if (!strcmp(key, "alpha"))
-		{
-			return offsetof(ext_entvars_t, alpha) | GetExtFieldCookie();
-		}
-		if (!strcmp(key, "colormod"))
-		{
-			return offsetof(ext_entvars_t, colourmod) | GetExtFieldCookie();
-		}
+		return offset | GetExtFieldCookie();
 	}
 
+	return 0;
+}
+
+static intptr_t EXT_SetSendNeeded(intptr_t *args)
+{
+	unsigned int subject = args[1];
+	unsigned int sendflags = args[2] & 0xFFFFFF;
+	int to = args[3];
+
+	SV_CSQC_SetSendNeeded(subject, sendflags, to);
 	return 0;
 }
 

@@ -45,6 +45,7 @@ $Id: cl_parse.c,v 1.135 2007-10-28 19:56:44 qqshka Exp $
 #include "qtv.h"
 #include "r_brushmodel_sky.h"
 #include "central.h"
+#include "cl_csqc.h"
 
 int CL_LoginImageId(const char* name);
 
@@ -162,6 +163,15 @@ static cl_message_t cl_messages[NUMMSG];
 
 static void CL_Messages_f(void);
 static void CL_InitialiseDemoMessageIfRequired(void);
+
+int CL_ServerMessageCount(int svc)
+{
+	if (svc < 0 || svc >= NUMMSG) {
+		return 0;
+	}
+
+	return cl_messages[svc].msgs;
+}
 
 void Cl_Messages_Init(void)
 {
@@ -604,6 +614,7 @@ void CL_Prespawn (void)
 	StatsGrid_ResetHoldItems();
 	HUD_NewMap();
 	Hunk_Check(); // make sure nothing is hurt
+	CL_CSQC_WorldLoaded();
 
 	CL_TransmitModelCrc (cl_modelindices[mi_player], "pmodel");
 	CL_TransmitModelCrc (cl_modelindices[mi_eyes], "emodel");
@@ -1856,7 +1867,23 @@ static void CL_ParseSpawnBaseline2 (void)
 	memset(&nullst, 0, sizeof (entity_state_t));
 	memset(&es, 0, sizeof (entity_state_t));
 
-	CL_ParseDelta(&nullst, &es, MSG_ReadShort());
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+	if (cls.fteprotocolextensions2 & FTE_PEXT2_REPLACEMENTDELTAS) {
+		if (!CL_ParseFTEBaselineDelta(&es, true)) {
+			Host_Error("CL_ParseSpawnBaseline2: bad replacement baseline");
+			return;
+		}
+	}
+	else
+#endif
+	{
+		CL_ParseDelta(&nullst, &es, MSG_ReadShort());
+	}
+
+	if (es.number < 0 || es.number >= CL_MAX_EDICTS) {
+		Host_Error("CL_ParseSpawnBaseline2: ent > CL_MAX_EDICTS");
+		return;
+	}
 	memcpy(&cl_entities[es.number].baseline, &es, sizeof(es));
 }
 #endif
@@ -1872,7 +1899,18 @@ void CL_ParseStatic (qbool extended)
 		entity_state_t nullst;
 		memset (&nullst, 0, sizeof(entity_state_t));
 
-		CL_ParseDelta (&nullst, &es, MSG_ReadShort());
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+		if (cls.fteprotocolextensions2 & FTE_PEXT2_REPLACEMENTDELTAS) {
+			if (!CL_ParseFTEBaselineDelta(&es, false)) {
+				Host_Error("CL_ParseStatic: bad replacement static");
+				return;
+			}
+		}
+		else
+#endif
+		{
+			CL_ParseDelta (&nullst, &es, MSG_ReadShort());
+		}
 	} 
 	else
 	{
@@ -2446,6 +2484,8 @@ void CL_ProcessServerInfo (void)
 			strlcpy(cl.fixed_team_names[3], s, sizeof(cl.fixed_team_names[3]));
 		}
 	}
+
+	CL_CSQC_ServerInfoChanged();
 }
 
 // Parse a string looking like this: //vwep vwplayer w_axe w_shot w_shot2
@@ -3636,7 +3676,17 @@ void CL_ParseServerMessage (void)
 			break;
 		}
 
-		if (cmd == svc_qizmovoice)
+		if (cmd == svc_fte_csqcentities)
+			SHOWNET("svc_fte_csqcentities")
+		else if (cmd == svc_fte_csqcentities_sized)
+			SHOWNET("svc_fte_csqcentities_sized")
+		else if (cmd == svc_fte_cgamepacket_sized)
+			SHOWNET("svc_fte_cgamepacket_sized")
+		else if (cmd == svc_fte_cgamepacket)
+			SHOWNET("svc_fte_cgamepacket")
+		else if (cmd == svc_fte_updateentities)
+			SHOWNET("svc_fte_updateentities")
+		else if (cmd == svc_qizmovoice)
 			SHOWNET("svc_qizmovoice")
 		else if (cmd < num_svc_strings)
 			SHOWNET(svc_strings[cmd]);
@@ -3892,6 +3942,22 @@ void CL_ParseServerMessage (void)
 					break;
 				}
 #endif // PROTOCOL_VERSION_FTE
+			case svc_fte_csqcentities:
+				{
+					CL_CSQC_ParseEntities(false);
+					break;
+				}
+			case svc_fte_csqcentities_sized:
+				{
+					CL_CSQC_ParseEntities(true);
+					break;
+				}
+			case svc_fte_cgamepacket_sized:
+				{
+					if (!CL_CSQC_ParseGamePacket(true))
+						Com_DPrintf("Ignoring svc_fte_cgamepacket_sized without active CSQC path\n");
+					break;
+				}
 			case svc_temp_entity:
 				{
 					CL_ParseTEnt();
@@ -4073,6 +4139,11 @@ void CL_ParseServerMessage (void)
 					CL_ParsePacketEntities(true);
 					break;
 				}
+			case svc_fte_updateentities:
+				{
+					CL_ParseFTEUpdateEntities();
+					break;
+				}
 			case svc_maxspeed:
 				{
 					float newspeed = MSG_ReadFloat ();
@@ -4111,6 +4182,11 @@ void CL_ParseServerMessage (void)
 				}
 			case svc_qizmovoice:
 				{
+					if ((cls.fteprotocolextensions & FTE_PEXT_CSQC) && CL_CSQC_IsActive()) {
+						CL_CSQC_ParseGamePacket(false);
+						break;
+					}
+
 					CL_ParseQizmoVoice();
 					break;
 				}

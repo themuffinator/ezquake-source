@@ -1082,6 +1082,8 @@ void CL_SetUpPlayerPrediction(qbool dopred);
 void CL_EmitEntities (void);
 void CL_ClearProjectiles (void);
 void CL_ParsePacketEntities (qbool delta);
+void CL_ParseFTEUpdateEntities(void);
+qbool CL_ParseFTEBaselineDelta(entity_state_t* to, qbool numbered);
 void CL_SetSolidEntities (void);
 void CL_ParsePlayerinfo (void);
 void CL_StorePausePredictionLocations(void);

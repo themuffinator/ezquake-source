@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "hud_common.h"
 #include "mvd_utils.h"
 #include "r_matrix.h"
+#include "cl_csqc.h"
 
 #ifdef X11_GAMMA_WORKAROUND
 #include "tr_types.h"
@@ -864,12 +865,18 @@ static void V_AddViewWeapon(float bob)
 	vec3_t forward, right, up;
 	centity_t *cent;
 	int gunmodel = V_CurrentWeaponModel();
+	int gunframe = view_message.weaponframe;
 	extern cvar_t scr_fov, scr_fovmode, scr_newHud;
 
+	CL_CSQC_GetViewModelState(&gunmodel, &gunframe);
+
 	cent = CL_WeaponModelForView();
-	TP_ParseWeaponModel(cl.model_precache[gunmodel]);
+	if (gunmodel > 0 && gunmodel < MAX_MODELS && cl.model_precache[gunmodel]) {
+		TP_ParseWeaponModel(cl.model_precache[gunmodel]);
+	}
 
 	if (!cl_drawgun.value
+		|| !gunmodel
 		|| (cl_drawgun.value == 2 && scr_fov.value > 90)
 		|| ((view_message.flags & (PF_GIB | PF_DEAD)))
 		|| (!cl_drawgun_invisible.value && cl.stats[STAT_ITEMS] & IT_INVISIBILITY)
@@ -916,14 +923,14 @@ static void V_AddViewWeapon(float bob)
 		cent->frametime = -1;
 	}
 	else {
-		if (cent->current.frame != view_message.weaponframe) {
+		if (cent->current.frame != gunframe) {
 			cent->frametime = cl.time;
 			cent->oldframe = cent->current.frame;
 		}
 	}
 
 	cent->current.modelindex = gunmodel;
-	cent->current.frame = view_message.weaponframe;
+	cent->current.frame = gunframe;
 }
 
 static void V_CalcIntermissionRefdef(void)

@@ -35,6 +35,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "hud_common.h"
 #include "hud_editor.h"
 #include "input.h"
+#include "cl_csqc.h"
 #include "gl_model.h"
 #include "tr_types.h"
 #include "teamplay.h"
@@ -112,6 +113,9 @@ cvar_t  cl_pext_limits = { "cl_pext_limits", "1" }; // enhanced protocol limits
 cvar_t  cl_pext_other = {"cl_pext_other", "0"};		// extensions which does not have own variables should be controlled by this variable.
 cvar_t  cl_pext_warndemos = { "cl_pext_warndemos", "1" }; // if set, user will be warned when saving demos that are not backwards compatible
 cvar_t  cl_pext_lagteleport = { "cl_pext_lagteleport", "1" }; // server-side adjustment of yaw angle through teleports
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+cvar_t  cl_pext_replacementdeltas = { "cl_pext_replacementdeltas", "1" };
+#endif
 #ifdef MVD_PEXT1_SERVERSIDEWEAPON
 cvar_t  cl_pext_serversideweapon = { "cl_pext_serversideweapon", "0", 0, onchange_pext_serversideweapon }; // server-side weapon selection
 #endif
@@ -478,6 +482,11 @@ unsigned int CL_SupportedFTEExtensions (void)
 		fteprotextsupported |= FTE_PEXT_FLOATCOORDS;
 #endif
 
+#ifdef FTE_PEXT_CSQC
+	if (CL_CSQC_ExtensionEnabled())
+		fteprotextsupported |= FTE_PEXT_CSQC;
+#endif
+
 #ifdef FTE_PEXT_TRANS
 	if (cl_pext_alpha.value)
 		fteprotextsupported |= FTE_PEXT_TRANS;
@@ -522,6 +531,9 @@ unsigned int CL_SupportedFTEExtensions2 (void)
 	unsigned int fteprotextsupported2 = 0
 #ifdef FTE_PEXT2_VOICECHAT
 		| FTE_PEXT2_VOICECHAT
+#endif
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+		| ((cl_pext_replacementdeltas.integer && CL_CSQC_ExtensionEnabled()) ? FTE_PEXT2_REPLACEMENTDELTAS : 0)
 #endif
 		;
 
@@ -609,10 +621,20 @@ static void CL_SendConnectPacket(
 	connect_time = cls.realtime; // For retransmit requests
 	cls.qport = Cvar_Value("qport");
 
+#ifdef FTE_PEXT_CSQC
+	const char* csqcactive_value = (cls.fteprotocolextensions & FTE_PEXT_CSQC) ? "1" : "0";
+	// FTE-style CSQC servers inspect this in ClientConnect, so it must be present in the initial userinfo.
+	CL_UserinfoChanged("csqcactive", (char*)csqcactive_value);
+#endif
+
 	// Let the server know what extensions we support.
 	strlcpy (biguserinfo, cls.userinfo, sizeof (biguserinfo));
 	extensions = CLIENT_EXTENSIONS &~ (cl_novweps.value ? Z_EXT_VWEP : 0);
 	Info_SetValueForStarKey (biguserinfo, "*z_ext", va("%i", extensions), sizeof(biguserinfo));
+#ifdef FTE_PEXT_CSQC
+	Info_SetValueForStarKey(biguserinfo, "*csqcactive", (char*)csqcactive_value, sizeof(biguserinfo));
+#endif
+	Com_Printf_State(PRINT_DBG, "connect userinfo csqcactive=%s\n", Info_ValueForKey(biguserinfo, "csqcactive"));
 
 	snprintf(data, sizeof(data), "\xff\xff\xff\xff" "connect %i %i %i \"%s\"\n", PROTOCOL_VERSION, cls.qport, cls.challenge, biguserinfo);
 
@@ -1239,6 +1261,7 @@ void CL_ClearState (void)
 	memset(cl_lightstyle, 0, sizeof(cl_lightstyle));
 	memset(cl_entities, 0, sizeof(cl_entities));
 	memset(cl_static_entities, 0, sizeof(cl_static_entities));
+	CL_CSQC_ClearState();
 
 	// Set entnum for all entity baselines
 	for (i = 0; i < sizeof(cl_entities) / sizeof(cl_entities[0]); ++i) {
@@ -1917,6 +1940,9 @@ static void CL_InitLocal(void)
 	Cvar_Register(&cl_pext_limits);
 	Cvar_Register(&cl_pext_other);
 	Cvar_Register(&cl_pext_warndemos);
+#ifdef FTE_PEXT2_REPLACEMENTDELTAS
+	Cvar_Register(&cl_pext_replacementdeltas);
+#endif
 #ifdef MVD_PEXT1_HIGHLAGTELEPORT
 	Cvar_Register(&cl_pext_lagteleport);
 #endif
@@ -2131,6 +2157,7 @@ void CL_Init (void)
 	CL_FixupModelNames ();
 	CL_InitInput ();
 	CL_InitEnts ();
+	CL_CSQC_Init();
 	CL_InitTEnts ();
 	CL_InitTEntsCvar();
 	CL_InitPrediction ();
@@ -2776,6 +2803,7 @@ void CL_Frame(double time)
 
 void CL_Shutdown (void) 
 {
+	CL_CSQC_Shutdown();
 	CL_Disconnect();
 	SList_Shutdown();
 	CDAudio_Shutdown();
