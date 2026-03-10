@@ -42,6 +42,41 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "cmdline_params.h"
 #include "fs.h"
 
+// CSQC transport/message constants were added in Phase 4 codepaths, but may be
+// absent in some qwprot protocol.h revisions. Keep local fallback values here
+// to avoid taking a hard submodule dependency for these extension IDs.
+#ifndef FTE_PEXT_CSQC
+#define FTE_PEXT_CSQC				0x40000000
+#endif
+
+#ifndef svc_fte_csqcentities
+#define svc_fte_csqcentities			76
+#endif
+
+#ifndef svc_fte_cgamepacket
+#define svc_fte_cgamepacket			83
+#endif
+
+#ifndef svc_fte_updateentities
+#define svc_fte_updateentities			86
+#endif
+
+#ifndef svc_fte_cgamepacket_sized
+#define svc_fte_cgamepacket_sized		90
+#endif
+
+#ifndef svc_fte_csqcentities_sized
+#define svc_fte_csqcentities_sized		92
+#endif
+
+#ifndef FTE_PEXT2_REPLACEMENTDELTAS
+#define FTE_PEXT2_REPLACEMENTDELTAS		0x00000008
+#endif
+
+#ifndef FTE_PEXT2_PREDINFO
+#define FTE_PEXT2_PREDINFO			0x00000020
+#endif
+
 #if defined(_WIN64) && !defined(__MINGW64__)
 int Q_strlen(const char* s);
 #define strlen Q_strlen
